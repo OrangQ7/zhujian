@@ -31,6 +31,10 @@ function normalize(raw) {
 }
 
 async function handler(req,res) {
+  const requestId=require('node:crypto').randomUUID();
+  const started=Date.now();
+  const log=(event,info={})=>console.info(JSON.stringify({requestId,event,elapsedMs:Date.now()-started,...info}));
+  res.setHeader('X-Inspection-Request-Id',requestId);
   res.setHeader('Cache-Control','no-store');
   const allowed=new Set(['https://orangq7.github.io',...(process.env.ALLOWED_ORIGINS||'').split(',').filter(Boolean)]);
   const origin=req.headers.origin;
@@ -46,21 +50,32 @@ async function handler(req,res) {
   if(typeof body==='string'){try{body=JSON.parse(body)}catch{return res.status(400).json({error:'请求格式无效'})}}
   const image=body?.image;
   if(typeof image!=='string'||image.length>3_500_000||!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(image))return res.status(400).json({error:'请上传小于约2.5MB的图片'});
+  log('model_request_started',{model:process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915'});
   try {
     const response=await fetch('https://ark.cn-beijing.volces.com/api/v3/responses',{
       method:'POST',signal:AbortSignal.timeout(110000),
       headers:{Authorization:`Bearer ${process.env.ARK_API_KEY.trim()}`,'Content-Type':'application/json'},
-      body:JSON.stringify({model:process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',max_output_tokens:5000,
+      body:JSON.stringify({model:process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',max_output_tokens:6000,thinking:{type:'disabled'},
         input:[{role:'system',content:[{type:'input_text',text:INSTRUCTIONS}]},{role:'user',content:[{type:'input_image',image_url:image},{type:'input_text',text:'检查部位：'+txt(body.part,300)+'。现场说明：'+txt(body.note,800)}]}]})
     });
-    if(!response.ok) return res.status(502).json({error:response.status===401?'豆包密钥无效，请检查云端配置':response.status===429?'模型繁忙或额度受限，请稍后重试':'豆包调用失败，请检查模型开通状态',upstreamStatus:response.status});
+    if(!response.ok) {
+      let detail={};try{detail=await response.json()}catch{}
+      const upstreamCode=String(detail.error?.code||'').slice(0,100);
+      log('model_request_failed',{upstreamStatus:response.status,upstreamCode});
+      return res.status(502).json({error:response.status===401?'豆包鉴权失败，请检查云端密钥':response.status===429?'模型繁忙或额度受限，请稍后重试':'豆包调用失败，请检查模型开通状态',upstreamStatus:response.status,upstreamCode,requestId});
+    }
     const data=await response.json();
+    log('model_response_received',{status:data.status,usage:data.usage||null,responseId:data.id});
+    if(data.status==='incomplete')return res.status(502).json({error:'模型输出被截断，未生成完整记录，请重试',code:'MODEL_INCOMPLETE',requestId,usage:data.usage||null});
+    if(data.status==='failed'||data.error)return res.status(502).json({error:'模型未完成分析，请稍后重试',code:'MODEL_FAILED',requestId});
     const text=(data.output||[]).filter(x=>x.type==='message').flatMap(x=>x.content||[]).filter(x=>x.type==='output_text').map(x=>x.text).join('');
     const cleaned=text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');
-    let parsed;try{parsed=JSON.parse(cleaned)}catch{return res.status(502).json({error:'模型未返回有效记录，请重试'})}
-    return res.status(200).json({...normalize(parsed),usage:data.usage||null});
+    let parsed;try{parsed=JSON.parse(cleaned)}catch{log('invalid_model_json');return res.status(502).json({error:'模型已响应，但记录格式不完整，请重试',requestId})}
+    const result=normalize(parsed);log('analysis_completed',{findingCount:result.findings.length});
+    return res.status(200).json({...result,usage:data.usage||null,model:data.model||process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',requestId,elapsedMs:Date.now()-started});
   } catch(e) {
-    return res.status(502).json({error:e.name==='TimeoutError'?'识别超时，请稍后重试':'识别暂未完成，请稍后重试'});
+    log('analysis_failed',{errorType:e.name});
+    return res.status(502).json({error:e.name==='TimeoutError'?'等待豆包响应超时，本次未取得识别结果。请稍后重试':'识别暂未完成，请稍后重试',requestId});
   }
 }
 module.exports=handler;
