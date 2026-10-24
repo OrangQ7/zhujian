@@ -4,11 +4,18 @@ const INSTRUCTIONS = `你是施工现场检查辅助工具。仅依据提供的�
 不能从照片编造尺寸、检测值、隐蔽状况或具体规范条号；未拍到不等于现场缺失。
 规范依据仅作建议，只有确定时填写编号和名称，条号不确定时留空，不得声称已核验。
 疑似问题写明需核实条件，不自动判定重大事故隐患，不对整个工程作合格判断。
+逐项检查照片可见的防护、作业面、架体、用电及实体质量。不同部位、不同缺陷或需要不同整改措施的问题分别列项；不要把安全网缺失与安全网破损合成一项，也不要把同一事实重复拆分。证据不足的内容放入questions，不为增加数量而推断缺陷。
+每个可定位问题返回bbox=[左,上,右,下]，以整张图片左上角为原点，宽和高分别归一化为0到1000。框选问题实际所在区域，不能一律返回整张图；无法可靠定位则返回null。
 输出一个JSON对象，不要Markdown，结构：
-{"findings":[{"title":"简短问题标题","description":"部位和可见事实","risk":"高|中|低","severity":"一般隐患|不符合项|一般缺陷","deadline":"整改时限建议","rectification":"可执行整改建议","basis":[{"code":"规范编号，未知留空","name":"规范名称","clause":"条号，未知留空","requirement":"要求概述"}],"bbox":null}],"questions":[{"q":"需要现场核实的问题","affects":[1]}]}
+{"findings":[{"title":"简短问题标题","description":"部位和可见事实","risk":"高|中|低","severity":"一般隐患|不符合项|一般缺陷","deadline":"整改时限建议","rectification":"可执行整改建议","basis":[{"code":"规范编号，未知留空","name":"规范名称","clause":"条号，未知留空","requirement":"要求概述"}],"bbox":[100,100,400,600]}],"questions":[{"q":"需要现场核实的问题","affects":[1]}]}
 affects对应findings中从1开始的问题序号。最多输出10项；没有可见问题时findings为空数组。`;
 
 const txt=(v,n=1600)=>typeof v==='string'?v.slice(0,n):'';
+function box(value){
+  if(!Array.isArray(value)||value.length!==4||!value.every(v=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1000))return null;
+  const b=value.map(Math.round);
+  return b[2]>b[0]&&b[3]>b[1]?b:null;
+}
 function normalize(raw) {
   if(!raw || !Array.isArray(raw.findings)) throw new Error('INVALID_OUTPUT');
   const findings=raw.findings.slice(0,10).map(f=>({
@@ -17,7 +24,7 @@ function normalize(raw) {
     severity:['一般隐患','不符合项','一般缺陷'].includes(f.severity)?f.severity:'不符合项',
     deadline:txt(f.deadline,80),rectification:txt(f.rectification),
     basis:(Array.isArray(f.basis)?f.basis:[]).slice(0,4).map(b=>({code:txt(b.code,100),name:txt(b.name,200),clause:txt(b.clause,100),requirement:txt(b.requirement),clause_verified:false})),
-    bbox:null,verified:false,decision:'pending'
+    bbox:box(f.bbox),verified:false,decision:'pending'
   })).filter(f=>f.title&&f.description);
   const questions=(Array.isArray(raw.questions)?raw.questions:[]).slice(0,10).map(q=>({q:txt(q.q,500),affects:(Array.isArray(q.affects)?q.affects:[]).filter(n=>Number.isInteger(n)&&n>0&&n<=findings.length)})).filter(q=>q.q);
   return {findings,questions};
