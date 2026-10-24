@@ -72,7 +72,7 @@ async function handler(req,res) {
     const cleaned=text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');
     let parsed;try{parsed=JSON.parse(cleaned)}catch{
       try{const first=cleaned.indexOf('{'),last=cleaned.lastIndexOf('}');if(first<0||last<=first)throw new Error('NO_JSON');parsed=JSON.parse(cleaned.slice(first,last+1))}
-      catch{log('invalid_model_json',{textLength:text.length});return res.status(502).json({error:'模型已响应，但记录格式不完整，请重试',requestId})}
+      catch{log('invalid_model_json',{textLength:text.length});return res.status(502).json({error:'模型已响应，但记录格式不完整，请重试',requestId,diagnostic:{keys:Object.keys(data),status:data.status,textLength:text.length,types:(data.output||[]).map(x=>({type:x.type,contents:(x.content||[]).map(c=>({type:c.type,textType:typeof c.text}))})),textPreview:text.slice(0,160)}})}
     }
     const result=normalize(parsed);log('analysis_completed',{findingCount:result.findings.length});
     return res.status(200).json({...result,usage:data.usage||null,model:data.model||process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',requestId,elapsedMs:Date.now()-started});
